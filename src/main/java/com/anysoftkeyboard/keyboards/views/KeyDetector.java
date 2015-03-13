@@ -41,13 +41,11 @@ abstract class KeyDetector {
     }
 
     public Key[] setKeyboard(Keyboard keyboard) {
-        if (keyboard == null)
-            throw new NullPointerException();
+        if (keyboard == null) return new Key[0];
         mKeyboard = keyboard;
         List<Key> keys = mKeyboard.getKeys();
-        Key[] array = keys.toArray(new Key[keys.size()]);
-        mKeys = array;
-        return array;
+	    mKeys = keys.toArray(new Key[keys.size()]);
+        return mKeys;
     }
 
     public void setCorrection(float correctionX, float correctionY) {

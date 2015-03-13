@@ -25,7 +25,6 @@ import android.content.SharedPreferences.Editor;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.content.res.Configuration;
 import android.content.res.TypedArray;
-import android.graphics.drawable.Drawable;
 import android.inputmethodservice.InputMethodService;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -51,8 +50,6 @@ import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.ImageView;
-import android.widget.SimpleAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -105,29 +102,24 @@ import com.menny.android.anysoftkeyboard.R;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 
 /**
- * Input method implementation for Qwerty'ish keyboard.
+ * Input method implementation for QWERTY-ish keyboard.
  */
 public class AnySoftKeyboard extends InputMethodService implements
 		OnKeyboardActionListener, OnSharedPreferenceChangeListener,
 		AnyKeyboardContextProvider, SoundPreferencesChangedListener {
 
 	private final static String TAG = "ASK";
-	// private View mRestartSuggestionsView;
 	private static final long MINIMUM_REFRESH_TIME_FOR_DICTIONARIES = 30 * 1000;
-	private static final String SMILEY_PLUGIN_ID = "0077b34d-770f-4083-83e4-081957e06c27";
 	private static final String KEYBOARD_NOTIFICATION_ALWAYS = "1";
 	private static final String KEYBOARD_NOTIFICATION_ON_PHYSICAL = "2";
 	private static final String KEYBOARD_NOTIFICATION_NEVER = "3";
 	//Arrays.asList((CharSequence) ".", ",", "?", "!", ":", "'", "\"", "@", "#", "&", "()");
 	private static final List<CharSequence> msEmptyNextSuggestions = Arrays.asList(/*empty for now*/);
 	private static final long ONE_FRAME_DELAY = 1000l / 60l;
-	private static final long HALF_FRAME_DELAY = ONE_FRAME_DELAY / 2l;
 	private final AskPrefs mAskPrefs;
 	private final ModifierKeyState mShiftKeyState = new ModifierKeyState(true/*supports locked state*/);
 	private final ModifierKeyState mControlKeyState = new ModifierKeyState(false/*does not support locked state*/);
@@ -151,7 +143,6 @@ public class AnySoftKeyboard extends InputMethodService implements
 	private Suggest mSuggest;
 	private CompletionInfo[] mCompletions;
 	private AlertDialog mOptionsDialog;
-	private AlertDialog mQuickTextKeyDialog;
 	private long mMetaState;
 	private HashSet<Character> mSentenceSeparators = new HashSet<>();
 	// private BTreeDictionary mContactsDictionary;
@@ -177,7 +168,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 	private boolean mAllowSuggestionsRestart = true;
 	private boolean mCurrentlyAllowSuggestionRestart = true;
 	private boolean mJustAutoAddedWord = false;
-	private boolean mSmileyOnShortPress;
+	private boolean mDoNotFlipQuickTextKeyAndPopupFunctionality;
 	private String mOverrideQuickTextText = null;
 	private boolean mAutoCap;
 	private boolean mQuickFixes;
@@ -391,7 +382,6 @@ public class AnySoftKeyboard extends InputMethodService implements
 				}, true);
 		// resetting token users
 		mOptionsDialog = null;
-		mQuickTextKeyDialog = null;
 
 		mKeyboardSwitcher.setInputView(mInputView);
 		mInputView.setOnKeyboardActionListener(this);
@@ -430,10 +420,8 @@ public class AnySoftKeyboard extends InputMethodService implements
 		}
 		a.recycle();
 
-		mCandidateCloseText = (TextView) candidateViewContainer
-				.findViewById(R.id.close_suggestions_strip_text);
-		View closeIcon = candidateViewContainer
-				.findViewById(R.id.close_suggestions_strip_icon);
+		mCandidateCloseText = (TextView) candidateViewContainer.findViewById(R.id.close_suggestions_strip_text);
+		View closeIcon = candidateViewContainer.findViewById(R.id.close_suggestions_strip_icon);
 
 		if (mCandidateCloseText != null && closeIcon != null) {// why? In API3
 			// it is not
@@ -462,8 +450,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 			});
 		}
 
-		final TextView tipsNotification = (TextView) candidateViewContainer
-				.findViewById(R.id.tips_notification_on_candidates);
+		final TextView tipsNotification = (TextView) candidateViewContainer.findViewById(R.id.tips_notification_on_candidates);
 		if (tipsNotification != null) {// why? in API 3 it is not supported
 			if (mAskPrefs.getShowTipsNotification()
 					&& TutorialsProvider.shouldShowTips(getApplicationContext())) {
@@ -521,6 +508,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 			return;
 		}
 
+		mInputView.dismissPopupKeyboard();
 		mInputView.setKeyboardActionType(attribute.imeOptions);
 		mKeyboardSwitcher.makeKeyboards(false);
 
@@ -639,10 +627,6 @@ public class AnySoftKeyboard extends InputMethodService implements
 		if (mOptionsDialog != null && mOptionsDialog.isShowing()) {
 			mOptionsDialog.dismiss();
 			mOptionsDialog = null;
-		}
-		if (mQuickTextKeyDialog != null && mQuickTextKeyDialog.isShowing()) {
-			mQuickTextKeyDialog.dismiss();
-			mQuickTextKeyDialog = null;
 		}
 
 		super.hideWindow();
@@ -878,6 +862,14 @@ public class AnySoftKeyboard extends InputMethodService implements
 	}
 
 	@Override
+	public void onComputeInsets(@NonNull InputMethodService.Insets outInsets) {
+		super.onComputeInsets(outInsets);
+		if (!isFullscreenMode()) {
+			outInsets.contentTopInsets = outInsets.visibleTopInsets;
+		}
+	}
+
+	@Override
 	public void onDisplayCompletions(CompletionInfo[] completions) {
 		if (FeaturesSet.DEBUG_LOG) {
 			Log.d(TAG, "Received completions:");
@@ -925,22 +917,17 @@ public class AnySoftKeyboard extends InputMethodService implements
 		// or if the physical keyboard supports candidates
 		// (mPredictionLandscape)
 		final boolean shouldShow = shouldCandidatesStripBeShown() && shown;
-		final boolean currentlyShown = mCandidatesParent != null
-				&& mCandidatesParent.getVisibility() == View.VISIBLE;
+		final boolean currentlyShown = mCandidatesParent != null && mCandidatesParent.getVisibility() == View.VISIBLE;
 		super.setCandidatesViewShown(shouldShow);
 		if (shouldShow != currentlyShown) {
-			// I believe (can't confirm it) that candidates animation is kinda
-			// rare,
-			// and it is better to load it on demand, then to keep it in memory
-			// always..
+			// I believe (can't confirm it) that candidates animation is kinda rare,
+			// and it is better to load it on demand, then to keep it in memory always..
 			if (shouldShow) {
-				mCandidatesParent.setAnimation(AnimationUtils.loadAnimation(
-						getApplicationContext(),
-						R.anim.candidates_bottom_to_up_enter));
+				mCandidatesParent.setAnimation(
+						AnimationUtils.loadAnimation(this, R.anim.candidates_bottom_to_up_enter));
 			} else {
-				mCandidatesParent.setAnimation(AnimationUtils.loadAnimation(
-						getApplicationContext(),
-						R.anim.candidates_up_to_bottom_exit));
+				mCandidatesParent.setAnimation(
+						AnimationUtils.loadAnimation(this, R.anim.candidates_up_to_bottom_exit));
 			}
 		}
 	}
@@ -948,8 +935,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 	@Override
 	public void setCandidatesView(@NonNull View view) {
 		super.setCandidatesView(view);
-		mCandidatesParent = view.getParent() instanceof View ? (View) view
-				.getParent() : null;
+		mCandidatesParent = view.getParent() instanceof View ? (View) view.getParent() : null;
 	}
 
 	private void clearSuggestions() {
@@ -959,7 +945,6 @@ public class AnySoftKeyboard extends InputMethodService implements
 	private void setSuggestions(List<CharSequence> suggestions,
 	                            boolean completions, boolean typedWordValid,
 	                            boolean haveMinimalSuggestion) {
-
 		if (mCandidateView != null) {
 			mCandidateView.setSuggestions(suggestions, completions,
 					typedWordValid, haveMinimalSuggestion && mAutoCorrectOn);
@@ -967,15 +952,20 @@ public class AnySoftKeyboard extends InputMethodService implements
 	}
 
 	@Override
-	public void onComputeInsets(@NonNull InputMethodService.Insets outInsets) {
-		super.onComputeInsets(outInsets);
-		if (!isFullscreenMode()) {
-			outInsets.contentTopInsets = outInsets.visibleTopInsets;
-		}
-	}
-
-	@Override
 	public boolean onEvaluateFullscreenMode() {
+		if (getCurrentInputEditorInfo() != null) {
+			final EditorInfo editorInfo = getCurrentInputEditorInfo();
+			if ((editorInfo.imeOptions & EditorInfo.IME_FLAG_NO_FULLSCREEN) != 0) {
+				//if the view DOES NOT want fullscreen, then do what it wants
+				Log.d(TAG, "Will not go to Fullscreen because input view requested IME_FLAG_NO_FULLSCREEN");
+				return false;
+			} else if ((editorInfo.imeOptions & EditorInfo.IME_FLAG_NO_EXTRACT_UI) != 0) {
+				Log.d(TAG, "Will not go to Fullscreen because input view requested IME_FLAG_NO_EXTRACT_UI");
+				return false;
+
+			}
+		}
+
 		switch (mOrientation) {
 			case Configuration.ORIENTATION_LANDSCAPE:
 				return mAskPrefs.getUseFullScreenInputInLandscape();
@@ -987,25 +977,16 @@ public class AnySoftKeyboard extends InputMethodService implements
 	@Override
 	public boolean onKeyDown(final int keyCode, @NonNull KeyEvent event) {
 		final boolean shouldTranslateSpecialKeys = isInputViewShown();
-		Log.d(TAG, "isInputViewShown=%s", shouldTranslateSpecialKeys);
 
-		if (event.isPrintingKey())
-			onPhysicalKeyboardKeyPressed();
+		if (event.isPrintingKey()) onPhysicalKeyboardKeyPressed();
+
 		mHardKeyboardAction.initializeAction(event, mMetaState);
 
 		InputConnection ic = getCurrentInputConnection();
-		Log.d(TAG,
-				"Event: Key:"
-						+ event.getKeyCode()
-						+ " Shift:"
-						+ ((event.getMetaState() & KeyEvent.META_SHIFT_ON) != 0)
-						+ " ALT:"
-						+ ((event.getMetaState() & KeyEvent.META_ALT_ON) != 0)
-						+ " Repeats:" + event.getRepeatCount());
 
 		switch (keyCode) {
 			/****
-			 * SPEACIAL translated HW keys If you add new keys here, do not forget
+			 * SPECIAL translated HW keys If you add new keys here, do not forget
 			 * to add to the
 			 */
 			case KeyEvent.KEYCODE_CAMERA:
@@ -1043,26 +1024,19 @@ public class AnySoftKeyboard extends InputMethodService implements
 				// mark
 				return super.onKeyDown(keyCode, event);
 			/****
-			 * END of SPEACIAL translated HW keys code section
+			 * END of SPECIAL translated HW keys code section
 			 */
 			case KeyEvent.KEYCODE_BACK:
 				if (event.getRepeatCount() == 0 && mInputView != null) {
 					if (mInputView.handleBack()) {
 						// consuming the meta keys
 						if (ic != null) {
-							ic.clearMetaKeyStates(Integer.MAX_VALUE);// translated,
-							// so we
-							// also take
-							// care of
-							// the
-							// metakeys.
+							// translated, so we also take care of the metakeys
+							ic.clearMetaKeyStates(Integer.MAX_VALUE);
 						}
 						mMetaState = 0;
 						return true;
-					} /*
-				 * else if (mTutorial != null) { mTutorial.close(); mTutorial =
-				 * null; }
-				 */
+					}
 				}
 				break;
 			case 0x000000cc:// API 14: KeyEvent.KEYCODE_LANGUAGE_SWITCH
@@ -1154,11 +1128,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 								final int translatedChar = mHardKeyboardAction
 										.getKeyCode();
 								// typing my own.
-								onKey(translatedChar, null, -1,
-										new int[]{translatedChar}, true/*
-																	 * simualting
-																	 * fromUI
-																	 */);
+								onKey(translatedChar, null, -1, new int[]{translatedChar}, true/*faking from UI*/);
 								// my handling
 								// we are at a regular key press, so we'll
 								// update
@@ -1227,6 +1197,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 
 	@Override
 	public boolean onKeyUp(int keyCode, @NonNull KeyEvent event) {
+		Log.d(TAG, "onKeyUp keycode=%d", keyCode);
 		switch (keyCode) {
 			// Issue 248
 			case KeyEvent.KEYCODE_VOLUME_DOWN:
@@ -1640,36 +1611,17 @@ public class AnySoftKeyboard extends InputMethodService implements
 				onText(mAskPrefs.getDomainText());
 				break;
 			case KeyCodes.QUICK_TEXT:
-				QuickTextKey quickTextKey = QuickTextKeyFactory
-						.getCurrentQuickTextKey(this);
-
-				if (mSmileyOnShortPress) {
-					if (TextUtils.isEmpty(mOverrideQuickTextText))
-						onText(quickTextKey.getKeyOutputText());
-					else
-						onText(mOverrideQuickTextText);
+				if (mDoNotFlipQuickTextKeyAndPopupFunctionality) {
+					outputCurrentQuickTextKey();
 				} else {
-					if (quickTextKey.isPopupKeyboardUsed()) {
-						showQuickTextKeyPopupKeyboard(quickTextKey);
-					} else {
-						showQuickTextKeyPopupList(quickTextKey);
-					}
+					openQuickTextPopup(key);
 				}
 				break;
 			case KeyCodes.QUICK_TEXT_POPUP:
-				quickTextKey = QuickTextKeyFactory.getCurrentQuickTextKey(this);
-				if (quickTextKey.getId().equals(SMILEY_PLUGIN_ID)
-						&& !mSmileyOnShortPress) {
-					if (TextUtils.isEmpty(mOverrideQuickTextText))
-						onText(quickTextKey.getKeyOutputText());
-					else
-						onText(mOverrideQuickTextText);
+				if (mDoNotFlipQuickTextKeyAndPopupFunctionality) {
+					openQuickTextPopup(key);
 				} else {
-					if (quickTextKey.isPopupKeyboardUsed()) {
-						showQuickTextKeyPopupKeyboard(quickTextKey);
-					} else {
-						showQuickTextKeyPopupList(quickTextKey);
-					}
+					outputCurrentQuickTextKey();
 				}
 				break;
 			case KeyCodes.MODE_SYMOBLS:
@@ -1750,6 +1702,20 @@ public class AnySoftKeyboard extends InputMethodService implements
 				}
 				break;
 		}
+	}
+
+	private void openQuickTextPopup(Key key) {
+		if (mInputView != null) {
+			mInputView.showQuickKeysView(key);
+		}
+	}
+
+	private void outputCurrentQuickTextKey() {
+		QuickTextKey quickTextKey = QuickTextKeyFactory.getCurrentQuickTextKey(this);
+		if (TextUtils.isEmpty(mOverrideQuickTextText))
+			onText(quickTextKey.getKeyOutputText());
+		else
+			onText(mOverrideQuickTextText);
 	}
 
 	private boolean isConnectBot() {
@@ -2319,9 +2285,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 		// || mCorrectionMode == mSuggest.CORRECTION_FULL;
 		CharSequence typedWord = mWord.getTypedWord();
 		// If we're in basic correct
-		boolean typedWordValid = mSuggest.isValidWord(typedWord);/*
-		        || (preferCapitalization() && mSuggest.isValidWord(typedWord
-                .toString().toLowerCase()));*/
+		boolean typedWordValid = mSuggest.isValidWord(typedWord);
 
 		if (mShowSuggestions || mQuickFixes) {
 			correctionAvailable |= typedWordValid;
@@ -2409,8 +2373,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 					// that the word was
 					// auto-added upon
 					// picking
-					&& !mSuggest.isValidWord(suggestion.toString()
-					.toLowerCase());
+					&& !mSuggest.isValidWord(suggestion.toString().toLowerCase(getCurrentKeyboard().getLocale()));
 
 			if (!mJustAutoAddedWord) {
 				/*
@@ -2447,7 +2410,7 @@ public class AnySoftKeyboard extends InputMethodService implements
 	private CharSequence pickSuggestion(CharSequence suggestion,
 	                                    boolean correcting) {
 		if (mShiftKeyState.isLocked()) {
-			suggestion = suggestion.toString().toUpperCase();
+			suggestion = suggestion.toString().toUpperCase(getCurrentKeyboard().getLocale());
 		} else if (preferCapitalization()
 				|| (mKeyboardSwitcher.isAlphabetMode() && (mInputView != null) && mInputView
 				.isShifted())) {
@@ -2827,24 +2790,13 @@ public class AnySoftKeyboard extends InputMethodService implements
 
 		mAutoCorrectOn = mAutoComplete;
 
-		// mCorrectionMode = mAutoComplete ? 2
-		// : (/*mShowSuggestions*/ mQuickFixes ? 1 : 0);
+		mDoNotFlipQuickTextKeyAndPopupFunctionality =
+				sp.getBoolean(getString(R.string.settings_key_do_not_flip_quick_key_codes_functionality),
+						getResources().getBoolean(R.bool.settings_default_do_not_flip_quick_keys_functionality));
 
-		mSmileyOnShortPress = sp
-				.getBoolean(
-						getString(R.string.settings_key_emoticon_long_press_opens_popup),
-						getResources()
-								.getBoolean(
-										R.bool.settings_default_emoticon_long_press_opens_popup));
-		// mSmileyPopupType =
-		// sp.getString(getString(R.string.settings_key_smiley_popup_type),
-		// getString(R.string.settings_default_smiley_popup_type));
-		mOverrideQuickTextText = sp.getString(
-				getString(R.string.settings_key_emoticon_default_text), null);
+		mOverrideQuickTextText = sp.getString(getString(R.string.settings_key_emoticon_default_text), null);
 
-		mMinimumWordCorrectionLength = sp
-				.getInt(getString(R.string.settings_key_min_length_for_word_correction__),
-						2);
+		mMinimumWordCorrectionLength = sp.getInt(getString(R.string.settings_key_min_length_for_word_correction__), 2);
 		if (mSuggest != null)
 			mSuggest.setMinimumWordLengthForCorrection(mMinimumWordCorrectionLength);
 
@@ -3205,97 +3157,6 @@ public class AnySoftKeyboard extends InputMethodService implements
 		super.onLowMemory();
 	}
 
-	private void showQuickTextKeyPopupKeyboard(QuickTextKey quickTextKey) {
-		if (mInputView != null) {
-            /*if (quickTextKey.getPackageContext() == getApplicationContext()) {
-                mInputView.simulateLongPress(KeyCodes.QUICK_TEXT);
-            } else {*/
-			mInputView.showQuickTextPopupKeyboard(quickTextKey);
-            /*}*/
-		}
-	}
-
-	private void showQuickTextKeyPopupList(@NonNull final QuickTextKey key) {
-		if (mQuickTextKeyDialog == null) {
-			String[] names = key.getPopupListNames();
-			final String[] texts = key.getPopupListValues();
-			int[] icons = key.getPopupListIconResIds();
-
-			final int N = names.length;
-
-			List<Map<String, ?>> entries = new ArrayList<>();
-			for (int i = 0; i < N; i++) {
-				HashMap<String, Object> entry = new HashMap<>();
-
-				entry.put("name", names[i]);
-				entry.put("text", texts[i]);
-				if (icons != null)
-					entry.put("icons", icons[i]);
-
-				entries.add(entry);
-			}
-
-			int layout;
-			String[] from;
-			int[] to;
-			if (icons == null) {
-				layout = R.layout.quick_text_key_menu_item_without_icon;
-				from = new String[]{"name", "text"};
-				to = new int[]{R.id.quick_text_name, R.id.quick_text_output};
-			} else {
-				layout = R.layout.quick_text_key_menu_item_with_icon;
-				from = new String[]{"name", "text", "icons"};
-				to = new int[]{R.id.quick_text_name, R.id.quick_text_output,
-						R.id.quick_text_icon};
-			}
-			final SimpleAdapter a = new SimpleAdapter(this, entries, layout,
-					from, to);
-			SimpleAdapter.ViewBinder viewBinder = new SimpleAdapter.ViewBinder() {
-				public boolean setViewValue(View view, Object data,
-				                            String textRepresentation) {
-					if (view instanceof ImageView) {
-						Context packageContext = key.getPackageContext();
-						if (packageContext != null) {
-							Drawable img = packageContext.getResources().getDrawable((Integer) data);
-							((ImageView) view).setImageDrawable(img);
-						}
-						return true;
-					}
-					return false;
-				}
-			};
-			a.setViewBinder(viewBinder);
-
-			AlertDialog.Builder b = new AlertDialog.Builder(this);
-
-			b.setTitle(getString(R.string.menu_insert_smiley));
-
-			b.setCancelable(true);
-			b.setAdapter(a, new DialogInterface.OnClickListener() {
-				@SuppressWarnings("unchecked")
-				// I know, I know, it is not safe to cast, but I created the
-				// list, and willing to pay the price.
-				public final void onClick(DialogInterface dialog, int which) {
-					HashMap<String, Object> item = (HashMap<String, Object>) a
-							.getItem(which);
-					onText((String) item.get("text"));
-
-					dialog.dismiss();
-				}
-			});
-
-			mQuickTextKeyDialog = b.create();
-			Window window = mQuickTextKeyDialog.getWindow();
-			WindowManager.LayoutParams lp = window.getAttributes();
-			lp.token = mInputView.getWindowToken();
-			lp.type = WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG;
-			window.setAttributes(lp);
-			window.addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);
-		}
-
-		mQuickTextKeyDialog.show();
-	}
-
 	public boolean promoteToUserDictionary(String word, int frequency) {
 		return !mUserDictionary.isValidWord(word) && mUserDictionary.addWord(word, frequency);
 	}
@@ -3315,12 +3176,11 @@ public class AnySoftKeyboard extends InputMethodService implements
 	@Override
 	public boolean onEvaluateInputViewShown() {
 		Configuration config = getResources().getConfiguration();
-		return config.keyboard == Configuration.KEYBOARD_NOKEYS
-				|| config.hardKeyboardHidden == Configuration.KEYBOARDHIDDEN_YES;
+		return config.keyboard == Configuration.KEYBOARD_NOKEYS || config.hardKeyboardHidden == Configuration.KEYBOARDHIDDEN_YES;
 	}
 
 	public void onCancel() {
-		// don't know what to do here.
+		hideWindow();
 	}
 
 	public void resetKeyboardView(boolean recreateView) {
